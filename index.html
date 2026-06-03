@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="corporate">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logistics Manager</title>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@3.9.4/dist/full.css" rel="stylesheet" type="text/css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-base-200 min-h-screen font-sans">
+
+  <div class="navbar bg-base-100 shadow-md px-6 sticky top-0 z-40">
+    <div class="flex-1">
+      <a class="btn btn-ghost normal-case text-xl font-bold text-primary">Logistics API Panel</a>
+    </div>
+  </div>
+
+  <div class="container mx-auto p-4 lg:p-6">
+    <div class="tabs tabs-boxed mb-6 bg-base-100 p-2 shadow-sm flex justify-center sm:justify-start overflow-x-auto">
+      <button class="tab tab-active font-medium" id="tab-cargas" onclick="switchEntity('Cargas')">Cargas</button>
+      <button class="tab font-medium" id="tab-camiones" onclick="switchEntity('Camiones')">Camiones</button>
+      <button class="tab font-medium" id="tab-choferes" onclick="switchEntity('Choferes')">Choferes</button>
+      <button class="tab font-medium" id="tab-brokers" onclick="switchEntity('Brokers')">Brokers</button>
+    </div>
+
+    <div class="card bg-base-100 shadow-xl p-6">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div class="form-control w-full sm:w-80">
+          <div class="join">
+            <input type="text" id="searchInput" placeholder="Buscar..." class="input input-bordered join-item w-full" onkeyup="if(event.key === 'Enter') triggerSearch()" />
+            <button class="btn btn-primary join-item" onclick="triggerSearch()">Buscar</button>
+          </div>
+        </div>
+        <button class="btn btn-success text-white w-full sm:w-auto shadow-sm" onclick="openModalCreate()">+ Nuevo Registro</button>
+      </div>
+
+      <div class="overflow-x-auto w-full border border-base-200 rounded-lg min-h-[350px]">
+        <table class="table table-zebra w-full" id="dataTable">
+          <thead><tr id="tableHeaders" class="bg-base-200 text-base-content text-sm"></tr></thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="flex justify-between items-center mt-6 flex-col sm:flex-row gap-4">
+        <span class="text-sm font-medium text-base-content/70" id="paginationInfo">Cargando...</span>
+        <div class="join shadow-sm" id="paginationControls"></div>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="crudModal" class="modal">
+    <div class="modal-box w-11/12 max-w-4xl bg-base-100">
+      <h3 class="font-bold text-xl mb-6 text-primary border-b pb-2" id="modalTitle">Formulario</h3>
+      <form id="crudForm" onsubmit="handleFormSubmit(event)">
+        <input type="hidden" id="formRowNum" value="" />
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="formFieldsContainer"></div>
+        <div class="modal-action mt-8">
+          <button type="button" class="btn btn-ghost" onclick="closeCrudModal()">Cancelar</button>
+          <button type="submit" class="btn btn-primary text-white px-8" id="submitBtn">Guardar Registro</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <div class="toast toast-end toast-bottom z-50 hidden" id="globalToast">
+    <div class="alert shadow-lg" id="toastAlert"><span id="toastMessage" class="font-medium"></span></div>
+  </div>
+
+  <script>
+    // =================================================================
+    // CONFIGURACIÓN API (Pega aquí la URL de tu Google Apps Script)
+    const API_URL = "https://script.google.com/macros/s/AKfycbybS9ksUrzHqa5f_UKNYr4wNW2AFmVhB2i_NZ_6BUWVkbzFtkQfcjNR7vHzDfheFjDamQ/exec";
+    // =================================================================
+
+    const SCHEMA = {
+      Cargas: { 
+        searchColIndex: 1, // Ahora busca por Load # que está en la posición 1 (Status es 0)
+        fields: ['Status', 'Load #', 'Loading Date', 'Origin', 'Destination', 'Delivery Date', 'Broker Name', 'Commodity', 'Miles', 'Empty Miles', 'Rate', 'Driver Name', 'Truck #', 'Trailer #', 'Pickup From/Appt', 'Pickup To', 'Delivery From/Appt', 'Delivery To', 'Drive Folder Link'], 
+        types: { 'Status': 'select', 'Loading Date': 'date', 'Delivery Date': 'date', 'Miles': 'number', 'Empty Miles': 'number', 'Rate': 'number', 'Pickup From/Appt':'datetime-local', 'Pickup To':'datetime-local', 'Delivery From/Appt':'datetime-local', 'Delivery To':'datetime-local' }, 
+        options: { 'Status': ['booked', 'in transit', 'delivered', 'canceled'] } 
+      },
+      Camiones: { searchColIndex: 0, fields: ['Truck #', 'Trailer #', 'Year', 'Truck VIN', 'Truck Plate', 'Trailer Plate', 'Assigned Driver', 'Drive Folder Link'], types: { 'Year': 'number' } },
+      Choferes: { searchColIndex: 0, fields: ['Driver Name', 'Driver Phone', 'E-mail', 'Drive Folder Link'], types: { 'E-mail': 'email' } },
+      Brokers: { searchColIndex: 0, fields: ['MC #', 'Broker Name', 'notes'], types: { 'MC #': 'number' } }
+    };
+
+    let currentEntity = 'Cargas';
+    let currentPage = 1;
+    let recordsPerPage = 10;
+    let currentQuery = '';
+    let currentData = [];
+
+    window.addEventListener('DOMContentLoaded', () => switchEntity('Cargas'));
+
+    function showToast(message, type = 'info') {
+      const toast = document.getElementById('globalToast');
+      const alert = document.getElementById('toastAlert');
+      alert.className = `alert alert-${type} shadow-lg text-white`;
+      document.getElementById('toastMessage').innerText = message;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 4000);
+    }
+
+    function switchEntity(entityName) {
+      currentEntity = entityName;
+      currentPage = 1;
+      currentQuery = '';
+      document.getElementById('searchInput').value = '';
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('tab-active'));
+      document.getElementById(`tab-${entityName.toLowerCase()}`).classList.add('tab-active');
+      document.getElementById('searchInput').placeholder = `Buscar en ${entityName}...`;
+      loadTableData();
+    }
+
+    function triggerSearch() {
+      currentQuery = document.getElementById('searchInput').value;
+      currentPage = 1;
+      loadTableData();
+    }
+
+    async function loadTableData() {
+      const tableBody = document.getElementById('tableBody');
+      tableBody.innerHTML = `<tr><td colspan="100%" class="text-center p-12"><span class="loading loading-spinner loading-lg text-primary"></span><p class="mt-4 text-sm text-gray-500">Sincronizando con Google Sheets...</p></td></tr>`;
+      
+      const config = SCHEMA[currentEntity];
+      const queryParams = new URLSearchParams({
+        action: 'getData', entity: currentEntity, page: currentPage, limit: recordsPerPage, query: currentQuery, searchCol: config.searchColIndex
+      });
+
+      try {
+        const response = await fetch(`${API_URL}?${queryParams}`);
+        const res = await response.json();
+        
+        if (res.success) {
+          currentData = res.data;
+          renderHeaders(res.headers);
+          renderRows(res.data, res.headers);
+          renderPagination(res.currentPage, res.totalPages);
+        } else {
+          throw new Error(res.message);
+        }
+      } catch (err) {
+        showToast('Error de conexión con la API', 'error');
+        tableBody.innerHTML = `<tr><td colspan="100%" class="text-center text-error p-6 font-medium">Error al cargar los datos. Revisa la URL de tu API.</td></tr>`;
+      }
+    }
+
+    async function apiRequest(payload) {
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      return await response.json();
+    }
+
+    async function handleFormSubmit(e) {
+      e.preventDefault();
+      const form = document.getElementById('crudForm');
+      const rowNum = document.getElementById('formRowNum').value;
+      const submitBtn = document.getElementById('submitBtn');
+      
+      submitBtn.classList.add('loading');
+      submitBtn.disabled = true;
+
+      const formData = new FormData(form);
+      const recordData = {};
+      SCHEMA[currentEntity].fields.forEach(field => { recordData[field] = formData.get(field); });
+
+      try {
+        const res = await apiRequest({ action: 'saveData', entity: currentEntity, rowNum: rowNum ? parseInt(rowNum) : null, recordData: recordData });
+        if (res.success) {
+          showToast(res.message, 'success');
+          closeCrudModal();
+          loadTableData();
+        } else {
+          showToast(res.message, 'error');
+        }
+      } catch (err) {
+        showToast('Error de red al guardar', 'error');
+      } finally {
+        submitBtn.classList.remove('loading');
+        submitBtn.disabled = false;
+      }
+    }
+
+    async function deleteItem(rowNum) {
+      if (confirm('¿Estás seguro de eliminar este registro permanentemente de la base de datos?')) {
+        try {
+          const res = await apiRequest({ action: 'deleteData', entity: currentEntity, rowNum: parseInt(rowNum) });
+          if (res.success) {
+            showToast(res.message, 'success');
+            loadTableData();
+          } else {
+            showToast(res.message, 'error');
+          }
+        } catch (err) {
+          showToast('Error al eliminar registro', 'error');
+        }
+      }
+    }
+
+    function renderHeaders(headers) {
+      const headerRow = document.getElementById('tableHeaders');
+      if (!headers || headers.length === 0) return headerRow.innerHTML = '<th>Añade cabeceras en Google Sheets</th>';
+      let html = '';
+      const maxCols = currentEntity === 'Cargas' ? 8 : headers.length;
+      for(let i=0; i<maxCols; i++) html += `<th>${headers[i]}</th>`;
+      headerRow.innerHTML = html + `<th class="text-right">Acciones</th>`;
+    }
+
+    function renderRows(data, headers) {
+      const tbody = document.getElementById('tableBody');
+      if (!data || data.length === 0) return tbody.innerHTML = `<tr><td colspan="100%" class="text-center p-8 text-base-content/50">No hay registros disponibles.</td></tr>`;
+      let html = '';
+      const maxCols = currentEntity === 'Cargas' ? 8 : headers.length;
+      data.forEach((row) => {
+        html += `<tr class="hover">`;
+        for (let i=0; i<maxCols; i++) {
+          let val = row[headers[i]] !== undefined ? row[headers[i]] : '';
+          
+          if(headers[i].toString().toLowerCase().includes('link') && val) {
+            val = `<a href="${val}" target="_blank" class="link link-primary font-medium text-xs">Abrir Drive</a>`;
+          } else if(headers[i] === 'Status') {
+            const colors = { 'booked': 'badge-info', 'in transit': 'badge-warning', 'delivered': 'badge-success text-white', 'canceled': 'badge-error text-white' };
+            val = `<span class="badge ${colors[val] || 'badge-ghost'} badge-sm font-bold uppercase tracking-wider text-[10px]">${val}</span>`;
+          } else if(headers[i] === 'Rate' && val !== '') {
+            val = `<span class="font-semibold text-success">$${Number(val).toFixed(2)}</span>`;
+          } else if(headers[i] === 'Loading Date' || headers[i] === 'Delivery Date') {
+             if(val) try { val = new Date(val).toLocaleDateString() } catch(e){}
+          }
+          
+          html += `<td class="max-w-[150px] truncate text-sm">${val}</td>`;
+        }
+        html += `<td class="text-right whitespace-nowrap"><div class="join">
+          <button class="btn btn-sm btn-square btn-outline btn-info join-item" onclick="openModalEdit(${row._rowNum})" title="Editar">
+             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+          </button>
+          <button class="btn btn-sm btn-square btn-outline btn-error join-item" onclick="deleteItem(${row._rowNum})" title="Eliminar">
+             <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+          </button>
+        </div></td></tr>`;
+      });
+      tbody.innerHTML = html;
+    }
+
+    function renderPagination(current, total) {
+      document.getElementById('paginationInfo').innerText = `Página ${current} de ${total}`;
+      const c = document.getElementById('paginationControls'); c.innerHTML = '';
+      if (total <= 1) return;
+      c.innerHTML = `
+        <button class="join-item btn btn-sm ${current===1?'btn-disabled':''}" onclick="if(${current}>1){currentPage--;loadTableData()}">Anterior</button>
+        <button class="join-item btn btn-sm btn-active pointer-events-none">${current}</button>
+        <button class="join-item btn btn-sm ${current===total?'btn-disabled':''}" onclick="if(${current}<${total}){currentPage++;loadTableData()}">Siguiente</button>
+      `;
+    }
+
+    function buildFormFields(entityName, values = null) {
+      const c = document.getElementById('formFieldsContainer'); c.innerHTML = '';
+      const schema = SCHEMA[entityName];
+      
+      schema.fields.forEach(field => {
+        const val = values && values[field] !== undefined ? values[field] : '';
+        const fType = schema.types && schema.types[field] ? schema.types[field] : 'text';
+        let inputHtml = '';
+        
+        if (fType === 'select') {
+          let opts = schema.options[field].map(o => `<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('');
+          inputHtml = `<select class="select select-bordered w-full" name="${field}">${opts}</select>`;
+        } else {
+          let parsedVal = val;
+          if(fType === 'date' && val) {
+             try { parsedVal = new Date(val).toISOString().split('T')[0] } catch(e){}
+          } else if (fType === 'datetime-local' && val) {
+             try { parsedVal = new Date(val).toISOString().slice(0, 16) } catch(e){}
+          }
+          inputHtml = `<input type="${fType}" value="${parsedVal}" class="input input-bordered w-full focus:input-primary" name="${field}" />`;
+        }
+        
+        c.innerHTML += `<div class="form-control w-full"><label class="label"><span class="label-text font-semibold text-gray-700">${field}</span></label>${inputHtml}</div>`;
+      });
+    }
+
+    function openModalCreate() { document.getElementById('modalTitle').innerText = `Registrar Nuevo(a) ${currentEntity}`; document.getElementById('formRowNum').value = ''; buildFormFields(currentEntity); document.getElementById('crudModal').showModal(); }
+    function openModalEdit(rowNum) { document.getElementById('modalTitle').innerText = `Editar ${currentEntity}`; document.getElementById('formRowNum').value = rowNum; buildFormFields(currentEntity, currentData.find(i => i._rowNum === rowNum)); document.getElementById('crudModal').showModal(); }
+    function closeCrudModal() { document.getElementById('crudModal').close(); document.getElementById('crudForm').reset(); }
+  </script>
+</body>
+</html>
